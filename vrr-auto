@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# vrr-auto — enable VRR only while a game is fullscreen.
+#
+# The Gigabyte M32Q flickers under VRR at low/fluctuating frame rates
+# (fullscreen video at 24-60fps), but VRR is worth having in games that
+# run high-fps. Hyprland has no per-window VRR, so this daemon watches
+# window events and flips misc:vrr at runtime:
+#   fullscreen game window  -> vrr 2 (fullscreen-only)
+#   anything else           -> vrr 0
+#
+# Add game window classes to the regex below as needed
+# (find one with: hyprctl activewindow -j | jq .class).
+GAME_CLASS="${VRR_GAME_CLASS:-^(steam_app_[0-9]+|dota2|cs2|gamescope)\$}"
+
+sock="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+current=""
+
+set_vrr() {
+  local want=$1 why=$2 prev=$current
+  [[ $want == "$prev" ]] && return
+  # This box's Hyprland uses the Lua config parser; `hyprctl keyword` is
+  # rejected ("non-legacy parsers"), only eval works.
+  hyprctl eval "hl.config({ misc = { vrr = $want } })" >/dev/null || return
+  current=$want
+  # No toast for the silent baseline re-assert on startup/config reload.
+  [[ -n $prev ]] || return
+  if [[ $want == 2 ]]; then
+    notify-send -a vrr-auto -t 4000 "VRR on" "$why"
+  else
+    notify-send -a vrr-auto -t 4000 "VRR off"
+  fi
+}
+
+check() {
+  local win class fs
+  win=$(hyprctl -j activewindow 2>/dev/null) || return
+  class=$(jq -r '.class // empty' <<<"$win")
+  fs=$(jq -r '.fullscreen // 0' <<<"$win")
+  if [[ $fs == 2 && $class =~ $GAME_CLASS ]]; then
+    set_vrr 2 "$class"
+  else
+    set_vrr 0
+  fi
+}
+
+check
+socat -U - UNIX-CONNECT:"$sock" | while read -r line; do
+  case $line in
+    # A config reload re-applies monitors.lua and clobbers the runtime
+    # value, so drop the cache and re-assert.
+    configreloaded*) current="" ;&
+    fullscreen'>>'* | activewindow'>>'* | closewindow'>>'*) check ;;
+  esac
+done
