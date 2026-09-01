@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "costafot.vrr-status",
+  "name": "VRR Status",
+  "version": "1.0.0",
+  "author": "CostaFot",
+  "license": "MIT",
+  "description": "Shows the live state of Hyprland's variable refresh rate (misc:vrr) in the bar: off, armed for fullscreen, or engaged by the fullscreen window.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "VRR Status",
+    "description": "Monitor icon that lights up while VRR is engaged, with the current mode in the tooltip",
+    "category": "Display",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
