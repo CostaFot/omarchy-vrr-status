@@ -21,6 +21,14 @@ a game is fullscreen). Clicking the icon forces a re-read.
 ## Install
 
 ```bash
+omarchy plugin add https://github.com/CostaFot/omarchy-vrr-status --enable
+```
+
+Remove it again with `omarchy plugin remove costafot.vrr-status`.
+
+For hacking on it, symlink a checkout instead:
+
+```bash
 ln -s "$(pwd)" ~/.config/omarchy/plugins/costafot.vrr-status
 omarchy bar put costafot.vrr-status --section right
 omarchy restart shell
