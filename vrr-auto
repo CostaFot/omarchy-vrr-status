@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
-# vrr-auto — enable VRR only while a game is fullscreen.
+# vrr-auto — runtime toggles driven by fullscreen state.
 #
-# The Gigabyte M32Q flickers under VRR at low/fluctuating frame rates
-# (fullscreen video at 24-60fps), but VRR is worth having in games that
-# run high-fps. Hyprland has no per-window VRR, so this daemon watches
-# window events and flips misc:vrr at runtime:
-#   fullscreen game window  -> vrr 2 (fullscreen-only)
-#   anything else           -> vrr 0
+#   VRR:         on only while a GAME is fullscreen. The Gigabyte M32Q
+#                flickers under VRR at low/fluctuating frame rates
+#                (fullscreen video at 24-60fps), but VRR is worth having
+#                in games that run high-fps.
+#   Night light: suspended while ANY window is fullscreen (movies, games),
+#                then the hyprsunset.conf schedule is re-applied on exit.
+#                Suspension uses temperature 6500 rather than `identity`
+#                because hyprsunset keeps reporting the old temperature
+#                after `identity`, which would leave the bar pill lying.
 #
 # Add game window classes to the regex below as needed
 # (find one with: hyprctl activewindow -j | jq .class).
 GAME_CLASS="${VRR_GAME_CLASS:-^(steam_app_[0-9]+|dota2|cs2|gamescope)\$}"
+SUNSET_CONF="$HOME/.config/hypr/hyprsunset.conf"
+NEUTRAL_TEMP=6500 # omarchy-toggle-nightlight's OFF_TEMP
 
 sock="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
 current=""
+nl_current=""
 
 set_vrr() {
   local want=$1 why=$2 prev=$current
@@ -31,24 +37,90 @@ set_vrr() {
   fi
 }
 
+# Print "HH:MM<TAB>value" per profile in hyprsunset.conf, sorted by time;
+# value is a temperature or "identity".
+profiles() {
+  awk '
+    /^[[:space:]]*profile/                               { t = ""; v = "" }
+    /^[[:space:]]*time[[:space:]]*=/                     { x = $0; gsub(/[^0-9:]/, "", x); t = x }
+    /^[[:space:]]*temperature[[:space:]]*=/              { x = $0; gsub(/[^0-9]/, "", x); v = x }
+    /^[[:space:]]*identity[[:space:]]*=[[:space:]]*true/ { v = "identity" }
+    /}/ { if (t != "") print t "\t" v }
+  ' "$SUNSET_CONF" 2>/dev/null | sort
+}
+
+# What the schedule wants right now: the latest profile at or before the
+# current time, wrapping around to the day's last profile before dawn.
+scheduled_value() {
+  local now t v val="" last=""
+  now=$(date +%H:%M)
+  while IFS=$'\t' read -r t v; do
+    [[ $t > $now ]] || val=$v
+    last=$v
+  done < <(profiles)
+  echo "${val:-$last}"
+}
+
+apply_nightlight() {
+  local val=$1
+  if [[ -z $val || $val == identity ]]; then
+    hyprctl hyprsunset identity >/dev/null 2>&1
+  else
+    hyprctl hyprsunset temperature "$val" >/dev/null 2>&1
+  fi
+  omarchy-shell -q nightlight refresh >/dev/null 2>&1
+}
+
+set_nightlight() {
+  local want=$1 # "off" while fullscreen, "sched" otherwise
+  if [[ $want == off ]]; then
+    # Re-assert even when unchanged: hyprsunset re-tints on its own at
+    # profile boundaries (e.g. 20:00 hitting mid-movie), so the periodic
+    # tick below has to beat it. The IPC call is idempotent and cheap.
+    apply_nightlight "$NEUTRAL_TEMP"
+  else
+    [[ $nl_current == sched ]] && return
+    apply_nightlight "$(scheduled_value)"
+  fi
+  nl_current=$want
+}
+
 check() {
   local win class fs
   win=$(hyprctl -j activewindow 2>/dev/null) || return
   class=$(jq -r '.class // empty' <<<"$win")
   fs=$(jq -r '.fullscreen // 0' <<<"$win")
-  if [[ $fs == 2 && $class =~ $GAME_CLASS ]]; then
-    set_vrr 2 "$class"
+  if [[ $fs == 2 ]]; then
+    set_nightlight off
+    if [[ $class =~ $GAME_CLASS ]]; then
+      set_vrr 2 "$class"
+    else
+      set_vrr 0
+    fi
   else
+    set_nightlight sched
     set_vrr 0
   fi
 }
 
 check
-socat -U - UNIX-CONNECT:"$sock" | while read -r line; do
-  case $line in
-    # A config reload re-applies monitors.lua and clobbers the runtime
-    # value, so drop the cache and re-assert.
-    configreloaded*) current="" ;&
-    fullscreen'>>'* | activewindow'>>'* | closewindow'>>'*) check ;;
-  esac
+socat -U - UNIX-CONNECT:"$sock" | while :; do
+  if read -r -t 60 line; then
+    case $line in
+      # A config reload re-applies monitors.lua and clobbers the runtime
+      # values, so drop the caches and re-assert.
+      configreloaded*)
+        current=""
+        nl_current=""
+        check
+        ;;
+      fullscreen'>>'* | activewindow'>>'* | closewindow'>>'*) check ;;
+    esac
+  else
+    rc=$?
+    ((rc > 128)) || break # EOF: socat/Hyprland went away
+    # Timeout tick: while fullscreen, re-assert the night-light suspension
+    # so hyprsunset's own schedule boundaries don't re-tint mid-session.
+    [[ $nl_current == off ]] && check
+  fi
 done

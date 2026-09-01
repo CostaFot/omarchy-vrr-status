@@ -50,6 +50,14 @@ for Proton titles, plus native classes like `dota2`; override with the
 listens on Hyprland's event socket (no polling), and re-asserts its state
 after config reloads.
 
+It also suspends hyprsunset's night light while *any* window is fullscreen
+(movies and games shouldn't be tinted): on fullscreen it sets a neutral
+6500K over `hyprctl hyprsunset` IPC, and on exit it re-applies whatever the
+schedule in `~/.config/hypr/hyprsunset.conf` wants at that moment. A 60s
+tick re-asserts the suspension so hyprsunset's own profile boundaries can't
+re-tint the screen mid-movie. If hyprsunset isn't running the calls are
+silent no-ops, so the VRR half works fine without it.
+
 Install: copy (or symlink) `vrr-auto` somewhere on your `PATH` and launch
 it from your Hyprland autostart, e.g. in `~/.config/hypr/autostart.lua`:
 
